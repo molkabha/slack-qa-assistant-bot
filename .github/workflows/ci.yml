@@ -1,0 +1,134 @@
+name: QA Assistant CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 9 * * *'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Setup Chrome
+      uses: browser-actions/setup-chrome@latest
+    
+    - name: Setup ChromeDriver
+      uses: nanasess/setup-chromedriver@master
+    
+    - name: Install Allure
+      run: |
+        wget -O allure-2.24.0.tgz https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/2.24.0/allure-commandline-2.24.0.tgz
+        tar -zxf allure-2.24.0.tgz -C /opt/
+        sudo ln -s /opt/allure-2.24.0/bin/allure /usr/bin/allure
+    
+    - name: Create reports directory
+      run: mkdir -p reports/allure-results reports/allure-report
+    
+    - name: Run API tests
+      run: |
+        pytest tests/test_api.py --alluredir=reports/allure-results --json-report --json-report-file=reports/api_results.json -v
+      continue-on-error: true
+    
+    - name: Run UI tests
+      run: |
+        pytest tests/test_ui.py --alluredir=reports/allure-results-ui --json-report --json-report-file=reports/ui_results.json -v
+      continue-on-error: true
+    
+    - name: Generate Allure Report
+      run: |
+        allure generate reports/allure-results -o reports/allure-report --clean
+        allure generate reports/allure-results-ui -o reports/allure-report-ui --clean
+      continue-on-error: true
+    
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-results
+        path: reports/
+    
+    - name: Deploy to staging
+      if: github.ref == 'refs/heads/develop'
+      run: |
+        echo "Deploying to staging environment"
+    
+    - name: Deploy to production
+      if: github.ref == 'refs/heads/main'
+      run: |
+        echo "Deploying to production environment"
+    
+    - name: Notify Slack on failure
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        channel: '#qa-alerts'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+    
+    - name: Notify Slack on success
+      if: success()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        channel: '#qa-alerts'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run security scan
+      uses: securecodewarrior/github-action-add-sarif@v1
+      with:
+        sarif-file: 'security-results.sarif'
+    
+    - name: Run dependency check
+      run: |
+        pip install safety
+        safety check --json --output safety-report.json
+      continue-on-error: true
+
+  build-and-push:
+    needs: [test, security-scan]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Build Docker image
+      run: |
+        docker build -t qa-assistant:latest .
+    
+    - name: Push to registry
+      run: |
+        echo "Pushing to container registry"

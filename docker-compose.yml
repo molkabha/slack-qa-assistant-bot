@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  qa-bot:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - ALERT_CHANNEL=${ALERT_CHANNEL:-#qa-alerts}
+      - DAILY_SUMMARY_CHANNEL=${DAILY_SUMMARY_CHANNEL:-#qa-daily}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://qa_user:qa_pass@db:5432/qa_db}
+    volumes:
+      - ./reports:/app/reports
+      - ./tests:/app/tests
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: postgres:15
+    environment:
+      - POSTGRES_DB=qa_db
+      - POSTGRES_USER=qa_user
+      - POSTGRES_PASSWORD=qa_pass
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  allure:
+    image: frankescobar/allure-docker-service
+    environment:
+      CHECK_RESULTS_EVERY_SECONDS: 3
+      KEEP_HISTORY: 1
+    ports:
+      - "5050:5050"
+    volumes:
+      - ./reports/allure-results:/app/allure-results
+      - ./reports/allure-report:/app/default-reports
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
