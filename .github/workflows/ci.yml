@@ -8,6 +8,12 @@ on:
   schedule:
     - cron: '0 9 * * *'
 
+# Add permissions for security scanning
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -70,57 +76,73 @@ jobs:
 
       - name: Upload test results
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: test-results
           path: reports/
 
       - name: Deploy to staging
-        if: github.ref == 'refs/heads/develop'
+        if: github.ref == 'refs/heads/develop' && success()
         run: echo "Deploying to staging environment"
 
       - name: Deploy to production
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && success()
         run: echo "Deploying to production environment"
 
+      # Fixed Slack notifications - using webhook URL
       - name: Notify Slack on failure
-        if: failure()
+        if: failure() && secrets.SLACK_WEBHOOK_URL != ''
         uses: 8398a7/action-slack@v3
         with:
           status: failure
           channel: '#qa-alerts'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
 
       - name: Notify Slack on success
-        if: success()
+        if: success() && secrets.SLACK_WEBHOOK_URL != ''
         uses: 8398a7/action-slack@v3
         with:
           status: success
           channel: '#qa-alerts'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
 
   security-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run security scan
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
         run: |
-          # Minimal valid SARIF
-          echo '{"version":"2.1.0","runs":[]}' > security-results.sarif
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Bandit security scan
+        run: |
+          pip install bandit[sarif]
+          bandit -r . -f sarif -o security-results.sarif --exit-zero
+        continue-on-error: true
 
       - name: Upload SARIF results
         uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
           sarif_file: security-results.sarif
+        continue-on-error: true
 
       - name: Run dependency check
         run: |
           pip install safety
-          safety check --json --output safety-report.json
+          safety check --json --output safety-report.json || true
         continue-on-error: true
 
       - name: Upload dependency report
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: safety-report
           path: safety-report.json
@@ -128,7 +150,7 @@ jobs:
   build-and-push:
     needs: [test, security-scan]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && success()
     steps:
       - uses: actions/checkout@v4
 
